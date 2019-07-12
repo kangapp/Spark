@@ -73,6 +73,12 @@ abstract class RDD[T: ClassTag](
 
 > Spark SQL is Apache Spark's module for working with structured data.
 
+#### 概述
+
+- 可以访问现有的hive数据，支持使用hive的UDF函数
+- 通过JDBC连接存在的BI工具
+- 支持多种语言
+
 #### 特性
 - 集成sql
 > Spark SQL lets you query structured data inside Spark programs, using either SQL or a familiar DataFrame API. Usable in Java, Scala, Python and R.
@@ -84,5 +90,20 @@ abstract class RDD[T: ClassTag](
 > A server mode provides industry standard JDBC and ODBC connectivity for business intelligence tools.
 
 #### DataFrame
+> A DataFrame is a Dataset organized into named columns（RDD with schema）  
+构建DataFrame来源：structured data files, tables in Hive, external databases, or existing RDDs.
 
+##### 基本API常用操作
+- Create DataFrame
+- printSchema
+- show
+- select
+```scala
+peopleDF.select("name").show()
+peopleDF.select(peopleDF.col("name"), (peopleDF.col("age")+10).as("age2")).show()
+```
+- filter
+```
+peopleDF.filter(peopleDF.col("age") > 10).show()
+```
 ### SparkStreaming
