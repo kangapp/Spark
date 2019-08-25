@@ -106,4 +106,10 @@ peopleDF.select(peopleDF.col("name"), (peopleDF.col("age")+10).as("age2")).show(
 ```
 peopleDF.filter(peopleDF.col("age") > 10).show()
 ```
+
+##### DataSource
+```scala
+val peopleDF = spark.read.format("json").load("examples/src/main/resources/people.json")
+peopleDF.select("name", "age").write.format("parquet").save("namesAndAges.parquet")
+```
 ### SparkStreaming
