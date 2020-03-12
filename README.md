@@ -92,19 +92,93 @@ abstract class RDD[T: ClassTag](
 #### DataFrame
 > A DataFrame is a Dataset organized into named columns（RDD with schema）  
 构建DataFrame来源：structured data files, tables in Hive, external databases, or existing RDDs.
+DataFrame is simply a type alias of Dataset[Row]
+
+##### SparkSession
+>The entry point to programming Spark with the Dataset and DataFrame API.
+```scala
+object SparkSessionAPP {
+
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession
+      .builder()
+      .master("local")
+      .appName("SparkSession")
+      .getOrCreate()
+    val df:DataFrame = spark.read.text("file:///Users/liufukang/workplace/SparkTest/data/word.dat")
+    df.show()
+    spark.stop()
+  }
+}
+```
+---
+```
++----------------+
+|           value|
++----------------+
+|   hello,how,why|
+|where,when,where|
+|   what,how,when|
+|  why,what,where|
++----------------+
+```
 
 ##### 基本API常用操作
 - Create DataFrame
+```scala
+val df: DataFrame = spark.read.json("/Users/liufukang/workplace/SparkTest/data/people.json")
+```
 - printSchema
+```
+root
+ |-- age: long (nullable = true)
+ |-- name: string (nullable = true)
+```
 - show
 - select
 ```scala
 peopleDF.select("name").show()
 peopleDF.select(peopleDF.col("name"), (peopleDF.col("age")+10).as("age2")).show()
+import spark.implicits._
+df.select($"name",($"age"+10).as("age+10")).show()
 ```
 - filter
 ```
 peopleDF.filter(peopleDF.col("age") > 10).show()
+import spark.implicits._
+df.filter($"age">20).show()
+```
+- group
+```scala
+df.groupBy("age").count().show()
+```
+- sql
+```scala
+df.createOrReplaceTempView("people")
+spark.sql("select * from people where age > 20").show()
+```
+- 取数
+```scala
+val frame: DataFrame = spark.read.json("/Users/liufukang/workplace/SparkTest/data/zips.json")
+//默认20，截取
+frame.show(10,false)
+
+//本质都是调用head函数
+println(frame.first())
+frame.head(10).foreach(println)
+frame.take(10).foreach(println)
+```
+
+- 案例
+```scala
+//统计每个地区人口数前三的城市，按人口数降序，并重命名字段
+import org.apache.spark.sql.functions._  //调用desc、row_number内置函数
+import spark.implicits._
+frame.withColumn("topN",
+  row_number.over(Window.partitionBy("state").orderBy(desc("pop"))))
+  .filter($"topN"<4)
+  .withColumnRenamed("_id","id")
+  .show(false)
 ```
 
 ##### DataSource
