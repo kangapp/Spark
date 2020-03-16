@@ -180,10 +180,217 @@ frame.withColumn("topN",
   .withColumnRenamed("_id","id")
   .show(false)
 ```
+---
+```
++-----+-----------+------------------------+-----+-----+----+
+|id   |city       |loc                     |pop  |state|topN|
++-----+-----------+------------------------+-----+-----+----+
+|85364|YUMA       |[-114.642362, 32.701507]|57131|AZ   |1   |
+|85204|MESA       |[-111.789554, 33.399168]|55180|AZ   |2   |
+|85023|PHOENIX    |[-112.111838, 33.632383]|54668|AZ   |3   |
+```
+##### 与RDD互操作
+```scala
+package com.test
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+
+object InteroperatingRddAPP {
+
+  def main(args: Array[String]): Unit = {
+    val spark = SparkSession.builder()
+      .master("local")
+      .appName("InteroperatingWithRdd")
+      .getOrCreate()
+
+    // 方式1
+    InferringByReflection(spark)
+
+    //方式2
+    InferringByProgram(spark)
+  }
+
+  /**
+    * 第一种方式(通过反射读取case class的参数名作为表的列名)
+    * 1）定义case class
+    * 2）RDD map, map中每一行数据转成case class
+    */
+  private def InferringByReflection(spark: SparkSession) = {
+    val peopleRdd: RDD[String] = spark.sparkContext.textFile("file:///Users/liufukang/workplace/SparkTest/data/people.txt")
+
+    import spark.implicits._
+    val peopleDF: DataFrame = peopleRdd.map(item => item.split(","))
+      .map(item => PeopleClass(item(0), item(1).trim.toInt))
+      .toDF()
+
+    peopleDF.printSchema()
+    peopleDF.show()
+    peopleDF.map(x => "name:" + x(0)).show()
+    peopleDF.map(x => "name:" + x.getAs[String]("name")).show()
+  }
+
+  /**
+    * 第二种方式：自定义编程
+    * 1）从原始的RDD创建RDD[Row]
+    * 2）创建StructType和第一步创建的Row相匹配，由StructField数组构成
+    * 3）调用createDataFrame方法关联StructType和RDD[Row]
+    */
+  private def InferringByProgram(spark: SparkSession) = {
+    val peopleRdd: RDD[String] = spark.sparkContext.textFile("file:///Users/liufukang/workplace/SparkTest/data/people.txt")
+
+    val rowRdd: RDD[Row] = peopleRdd.map(x => x.split(","))
+      .map(item => Row(item(0), item(1).trim.toInt))
+
+    val structType: StructType = StructType(Array(StructField("name",StringType,true), StructField("age",IntegerType,true)))
+
+    val peopleDF: DataFrame = spark.createDataFrame(rowRdd,structType)
+
+    peopleDF.printSchema()
+    peopleDF.show()
+  }
+
+  case class PeopleClass(name:String, age:Int)
+
+}
+```
 
 ##### DataSource
+- 文本
+```scala
+val peopleDF: DataFrame = spark.read.text("/Users/liufukang/workplace/SparkTest/data/people.txt")
+
+import spark.implicits._
+
+val peopleDS: Dataset[(String)] = peopleDF.map(item => {
+  val splits = item.getAs[String](0).split(",")
+  (splits(0).trim)
+})
+
+//文本只支持写入单列值的数据
+peopleDS.write.mode("overwrite").text("out")
+```
+- json
+```scala
+val peopleDF: DataFrame = spark.read.json("/Users/liufukang/workplace/SparkTest/data/people2.json")
+
+//嵌套json
+import spark.implicits._
+peopleDF.select($"name",$"age",$"info.work".as("work"),$"info.city".as("city")).write.mode(SaveMode.Overwrite).json("out")
+```
+- parquet
+```scala
+//parquet是默认的数据源
+val peopleDF: DataFrame = spark.read.load("/Users/liufukang/workplace/SparkTest/data/users.parquet")
+peopleDF.printSchema()
+
+//默认以snappy格式压缩，可配置
+peopleDF.write.mode(SaveMode.Overwrite).option("compression","none").save("out")
+```
+- jdbc
+```scala
+//jdbc读写两种方式，按个人喜好选择
+val jdbcDF = spark.read
+  .format("jdbc")
+  .option("url", "jdbc:mysql://10.211.55.100:3306")
+  .option("dbtable", "hive.TBLS")
+  .option("user","root")
+  .option("password", "123456").load()
+
+val connnectionProperties = new Properties()
+connnectionProperties.put("user","root")
+connnectionProperties.put("password","123456")
+val jdbcDF2 = spark.read.jdbc("jdbc:mysql://10.211.55.100:3306","hive.TBLS",connnectionProperties)
+
+jdbcDF.show()
+jdbcDF2.show()
+
+jdbcDF.write.mode(SaveMode.Overwrite)
+  .format("jdbc")
+  .option("url", "jdbc:mysql://10.211.55.100:3306")
+  .option("dbtable", "spark.TBLS")
+  .option("user","root")
+  .option("password", "123456")
+  .save()
+
+jdbcDF2.write.mode(SaveMode.Overwrite)
+    .option("createTableColumnTypes","TBL_NAME VARCHAR(128),TBL_TYPE VARCHAR(128)").jdbc("jdbc:mysql://10.211.55.100:3306","spark.TBLS1",connnectionProperties)
+```
+- hiive
+> thriftserver & beeline
+```bash
+#启动spark thriftserver服务，可以接访问hive
+./sbin/start-thriftserver.sh --master local --jars mysql-connector.jar
+#启动beeline 连接thriftserver服务
+./bin/./bin/beeline -u jdbc:hive2://10.211.55.100:10000
+```
+```scala
+//通过代码连接thriftserver
+Class.forName("org.apache.hive.jdbc.HiveDriver")
+val connection: Connection = DriverManager.getConnection("jdbc:hive2://10.211.55.100:10000")
+val pstmt: PreparedStatement = connection.prepareStatement("select * from test")
+
+val rs: ResultSet = pstmt.executeQuery()
+while(rs.next()){
+  println(rs.getObject(1)+"     "+ rs.getObject(2))
+}
+```
+> hive数据源
+```scala
+val spark_hive = SparkSession.builder().master("local[*]")
+        .appName("HiveDataSource")
+        .enableHiveSupport()  //连接hive必须
+        .getOrCreate()
+```
+```scala
+spark.table("default.test").show()
+spark.sql("CREATE TABLE IF NOT EXISTS src (key INT, value STRING) " +
+"ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' " +
+"LINES TERMINATED BY '\\n'")
+spark.sql("LOAD DATA LOCAL INPATH '/Users/liufukang/workplace/SparkTest/data/hive_source.txt' INTO TABLE src")
+
+val srcDF = spark.table("src")
+
+//自定义df和表src join
+val recordDF = spark.createDataFrame((1 to 100).map(i => Record(i, s"val_$i")))
+recordDF.createOrReplaceTempView("records")
+
+spark.sql("SELECT * FROM records r JOIN src s ON r.key = s.key").show()
+
+//开启动态分区
+spark.sqlContext.setConf("hive.exec.dynamic.partition", "true")
+spark.sqlContext.setConf("hive.exec.dynamic.partition.mode", "nonstrict")
+
+//数据以hive表的形式保存，key作为动态分区字段
+srcDF.write.partitionBy("key").format("hive")
+  .mode(SaveMode.Append)
+  .saveAsTable("src2")
+
+spark.sql("select * from src2 where key=1").show()
+```
+- 标准写法
 ```scala
 val peopleDF = spark.read.format("json").load("examples/src/main/resources/people.json")
 peopleDF.select("name", "age").write.format("parquet").save("namesAndAges.parquet")
+```
+#### DataSet
+>A Dataset is a distributed collection of data  
+strong typing, ability to use powerful lambda functions
+```scala
+//函数外定义
+case class Person(name:String, age:Long)
+
+val spark = SparkSession.builder()
+  .master("local")
+  .appName("DataSet")
+  .getOrCreate()
+//生成DataSet的几种途径
+import spark.implicits._
+val caseClassDS = Seq(Person("Jack",25)).toDS()
+val primitiveDS = Seq(1,2,3).toDS()
+val peopleDS = spark.read
+  .json("/Users/liufukang/workplace/SparkTest/data/people.json").as[Person]
+spark.stop()
 ```
 ### SparkStreaming
