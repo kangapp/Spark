@@ -369,12 +369,97 @@ srcDF.write.partitionBy("key").format("hive")
 
 spark.sql("select * from src2 where key=1").show()
 ```
+- hbase
+```scala
+/**
+  * hbase读 
+  */
+val conf = new Configuration()
+conf.set("hbase.zookeeper.quorum", "hadoop000:2181")
+val tableName = "accessLog_20200321"
+//选择要读取的表
+conf.set(TableInputFormat.INPUT_TABLE, tableName)
+
+val scan = new Scan()
+// 设置要查询的cf
+scan.addFamily(Bytes.toBytes("info"))
+
+// 设置要查询的列
+scan.addColumn(Bytes.toBytes("info"), Bytes.toBytes("city"))
+
+scan.addColumn(Bytes.toBytes("info"), Bytes.toBytes("browserName"))
+
+// 设置Scan
+conf.set(TableInputFormat.SCAN, Base64.encodeBytes(ProtobufUtil.toScan(scan).toByteArray))
+
+val hbaseRDD = spark.sparkContext.newAPIHadoopRDD(
+  conf,
+  classOf[TableInputFormat],
+  classOf[ImmutableBytesWritable],
+  classOf[Result]
+)
+
+hbaseRDD.take(100).foreach(x => {
+  val rowKey = Bytes.toString(x._1.get())
+
+  for(cell <- x._2.rawCells()) {
+    val cf = Bytes.toString(CellUtil.cloneFamily(cell))
+    val qualifier = Bytes.toString(CellUtil.cloneQualifier(cell))
+    val value = Bytes.toString(CellUtil.cloneValue(cell))
+
+    println(s"$rowKey : $cf : $qualifier : $value")
+  }
+})
+```
+```scala
+/**
+  * hbase写
+  */
+val schemaList = List("ip","city","operator","time","method","url","protocal","status","byteSent","referer","ua","browserName","browserVersion","osName","osVersion","flag")
+
+val dataFrame = spark.read.format("com.dataSources.v1.LogDataSource")
+  .option("path", "file:///Users/liufukang/workplace/SparkTest/data/access_big.log")
+  .option("sample","0.01")
+  .load()
+
+val hbaseRdd = dataFrame.rdd.map(item => {
+  val columns = scala.collection.mutable.Map[String, String]()
+  val list = schemaList.map(name => {
+    columns.put(name, if (item.getAs[String](name)!=null) item.getAs[String](name) else "")
+  })
+
+  //Hbase
+  val rowkey = getRowkey("20200321",columns.get("ip").get+columns.get("url").get+columns.get("referer").get)
+  val put = new Put(Bytes.toBytes(rowkey))
+
+  for((k,v) <- columns){
+    put.addColumn(Bytes.toBytes("info"),Bytes.toBytes(k),Bytes.toBytes(v))
+  }
+
+  (new ImmutableBytesWritable(rowkey.getBytes()), put)
+})
+
+val table_name = HBaseUtils.createTable("accessLog_20200321",Array("info"))
+
+val conf: Configuration = new Configuration()
+conf.set(TableOutputFormat.OUTPUT_TABLE, table_name)
+conf.set("hbase.zookeeper.quorum","hadoop000:2181")
+
+hbaseRdd.saveAsNewAPIHadoopFile(
+  "/tmp/hbase",
+  classOf[ImmutableBytesWritable],
+  classOf[Put],
+  classOf[TableOutputFormat[ImmutableBytesWritable]],
+  conf
+)
+```
 - 标准写法
 ```scala
 val peopleDF = spark.read.format("json").load("examples/src/main/resources/people.json")
 peopleDF.select("name", "age").write.format("parquet").save("namesAndAges.parquet")
 ```
-##### function
+##### [自定义DataSource]()
+##### [function](https://github.com/kangapp/Spark/blob/master/SparkSQL_Function)
 #### DataSet
 >A Dataset is a distributed collection of data  
 strong typing, ability to use powerful lambda functions
