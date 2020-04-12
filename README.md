@@ -480,3 +480,166 @@ val peopleDS = spark.read
 spark.stop()
 ```
 ### SparkStreaming
+
+#### kafka
+- 生产者
+```scala
+package com.sparkStreaming
+
+import java.util
+import java.util.{Date, Properties, UUID}
+
+import com.alibaba.fastjson.JSONObject
+import com.util.ParamsUtil
+import org.apache.commons.lang3.time.FastDateFormat
+import org.apache.kafka.clients.producer.{Callback, KafkaProducer, ProducerRecord, RecordMetadata}
+
+import scala.util.Random
+
+object KafkaProducerAPP {
+
+  def main(args: Array[String]): Unit = {
+    val props = new Properties
+    props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    props.put("bootstrap.servers", ParamsUtil.brokers)
+    props.put("request.required.acks", "1")
+
+    val topic = ParamsUtil.topic
+    val producer = new KafkaProducer[String, String](props)
+
+    val random = new Random()
+    val dateFormat = FastDateFormat.getInstance("yyyyMMddHHmmss")
+
+    for (i <- 1 to 50) {
+      val time = dateFormat.format(new Date()) + ""
+      val userid = random.nextInt(1000) + ""
+      val courseid = random.nextInt(500) + ""
+      val fee = random.nextInt(400) + ""
+      val result = Array("0", "1") // 0未成功支付，1成功支付
+      val flag = result(random.nextInt(2))
+      val orderid = UUID.randomUUID().toString
+
+      val map = new util.HashMap[String, Object]()
+      map.put("time", time)
+      map.put("userid", userid)
+      map.put("courseid", courseid)
+      map.put("fee", fee)
+      map.put("flag", flag)
+      map.put("orderid", orderid)
+
+      val json = new JSONObject(map)
+
+      println(json)
+
+      producer.send(new ProducerRecord[String, String](topic(0), i + "", json + ""), new Callback {
+        override def onCompletion(recordMetadata: RecordMetadata, e: Exception): Unit = {
+          if(null != recordMetadata) {
+            println(recordMetadata.offset()+":"+recordMetadata.partition()+":"+recordMetadata.topic()+":"+recordMetadata.timestamp())
+          } else{
+            e.printStackTrace()
+          }
+        }
+      })
+    }
+    producer.close()
+    println("Kafka生产者生产数据完毕...")
+  }
+}
+```
+- SparkStreaming对接Kafka
+```scala
+package com.sparkStreaming
+
+import com.alibaba.fastjson.JSON
+import com.util.{ParamsUtil, RedisUtils}
+import org.apache.kafka.common.TopicPartition
+import org.apache.spark.{SparkConf, TaskContext}
+import org.apache.spark.streaming.kafka010.{ConsumerStrategies, HasOffsetRanges, KafkaUtils, LocationStrategies, OffsetRange}
+import org.apache.spark.streaming.{Seconds, StreamingContext}
+
+object SparkStreaminAPP {
+
+  def main(args: Array[String]): Unit = {
+    val sparkConf = new SparkConf().setMaster("local[2]").setAppName("SparkStreaming")
+    val ssc = new StreamingContext(sparkConf, Seconds(5))
+
+    val jedis = RedisUtils.getJedis
+    val offsetMap = jedis.hgetAll(ParamsUtil.topic(0))
+    val fromOffsets = offsetMap.keySet().toArray().map(key =>
+      new TopicPartition(ParamsUtil.topic(0), key.toString.toInt) -> offsetMap.get(key).toLong
+    ).toMap
+
+    /**
+      * 第一次启动从zookeeper获取给定topic的分区数，每个分区的offset都设置为0
+      * 对于有新增分区的，从zookeepr获取分区数，新的分区offset设置为0
+      * */
+    val stream = KafkaUtils.createDirectStream(
+      ssc,
+      LocationStrategies.PreferConsistent,
+      ConsumerStrategies.Assign[String, String](fromOffsets.keys.toList,ParamsUtil.kafkaParams,fromOffsets)
+    )
+
+
+//    val stream = KafkaUtils.createDirectStream(
+//      ssc,
+//      LocationStrategies.PreferConsistent,
+//      ConsumerStrategies.Subscribe[String,String](ParamsUtil.topic, ParamsUtil.kafkaParams)
+//    )
+
+//    stream.map(x => x.value()).print()
+
+    //统计每天付费成功的总订单数
+    stream.foreachRDD( rdd => {
+      val data = rdd.map(x => JSON.parseObject(x.value()))
+      data.cache()
+
+      val result = data.map(x => {
+        val time = x.getString("time")
+        val day = time.substring(0,8)
+        val flag = x.getString("flag")
+        val flagResult = if(flag == "1") 1 else 0
+        (day, flagResult)
+      })
+
+      result.reduceByKey(_+_).coalesce(1).foreachPartition(partition => {
+        val jedis = RedisUtils.getJedis
+        partition.foreach(x => {
+          jedis.incrBy("Order-"+x._1, x._2)
+        })
+      })
+
+      // 每天付费成功的总订单金额
+      data.map(x => {
+        val time = x.getString("time")
+        val day = time.substring(0,8)
+        val flag = x.getString("flag")
+        val fee = if(flag == "1") x.getString("fee").toLong else 0
+        (day, fee)
+      }).reduceByKey(_+_).foreachPartition(partition => {
+        val jedis = RedisUtils.getJedis()
+        partition.foreach(x => {
+          jedis.incrBy("OrderFee-"+x._1, x._2)
+        })
+      })
+
+    })
+
+    /**
+      * 保存offset信息，topic_groupId_xxx,partition,offset
+      */
+    stream.foreachRDD { rdd =>
+      val offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+      rdd.foreachPartition { iter =>
+        val jedis = RedisUtils.getJedis()
+        val o: OffsetRange = offsetRanges(TaskContext.get.partitionId)
+        jedis.hset(o.topic, o.partition.toString, o.untilOffset.toString)
+        println(s"${o.topic} ${o.partition} ${o.fromOffset} ${o.untilOffset}")
+      }
+    }
+
+    ssc.start()
+    ssc.awaitTermination()
+  }
+}
+```
