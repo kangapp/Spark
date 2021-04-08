@@ -317,7 +317,7 @@ jdbcDF.write.mode(SaveMode.Overwrite)
 jdbcDF2.write.mode(SaveMode.Overwrite)
     .option("createTableColumnTypes","TBL_NAME VARCHAR(128),TBL_TYPE VARCHAR(128)").jdbc("jdbc:mysql://10.211.55.100:3306","spark.TBLS1",connnectionProperties)
 ```
-- hiive
+- hive
 > thriftserver & beeline
 ```bash
 #启动spark thriftserver服务，可以接访问hive
